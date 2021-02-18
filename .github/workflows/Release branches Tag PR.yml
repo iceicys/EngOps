@@ -1,0 +1,97 @@
+# This is a workflow on \Release Branches for incrementing associated tags and creating pull requests for manual merge back to develop branch
+name: Release branches Tag Pull Request
+on:
+  push:
+    branches: 'release/*'
+# There are 2 jobs
+jobs:
+  # This workflow contains a job called "Increment Tag"
+  Increment-Tag:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    outputs:
+      branchname: ${{ steps.bumpTag.outputs.branchname }}
+      newtag: ${{ steps.bumpTag.outputs.newtag }}
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+      - run: git fetch --prune --unshallow
+      # Runs a single command using the runners shell
+      - name: Run GIT_BRANCH
+        id: bumpTag        
+        run: |
+          branch_name=`git symbolic-ref --short -q HEAD`
+          echo "branch name is $branch_name"
+          echo "::set-output name=branchname::$branch_name"
+          branch_number=`echo $branch_name | awk -F'/' '{print $2}' | awk -F'.' '{print $1}'`
+          echo "Major is $branch_number"
+          branch_minor=`echo $branch_name | awk -F'/' '{print $2}' | awk -F'.' '{print $2}'`
+          echo "Minor is $branch_minor"
+          branch_patch=`echo $branch_name | awk -F'/' '{print $3}' | awk -F'.' '{print $3}'`
+          echo "Patch is $branch_patch"
+          git tag -l "$branch_number.$branch_minor.*"          
+          last_tag=`git tag -l "$branch_number.$branch_minor.*" | sort | tail -1`
+          echo "Most Recent tag is $last_tag"
+          if [ -z "$last_tag" ]
+          then
+                echo "tag not found creating new tag..."
+                git tag "$branch_number"."$branch_minor".0
+                git push --tags
+          else
+                echo "tag found adding new tag..."
+                echo $last_tag
+                version=`echo $last_tag | awk -F'.' '{print $1}'`
+                echo "Major: $version"
+                minor=`echo $last_tag | awk -F'.' '{print $2}'`
+                echo "Minor: $minor"
+                patch=`echo $last_tag | awk -F'.' '{print $3}'`
+                echo "Patch: $patch"
+                new_patch=$(($patch + 1))
+                echo "Patch Incremented to: $new_patch"
+                new_tag=$version.$minor.$new_patch
+                echo "New Tag: $new_tag"
+                echo "::set-output name=newtag::$new_tag"
+                git tag $new_tag
+                git push --tags
+          fi
+  Create-Release:
+  # Needs the Increment-Tag job for the outputs to be passed as variables.
+    needs: Increment-Tag
+    runs-on: ubuntu-latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+      - run: git fetch --prune --unshallow
+      # Runs a single command using the runners shell
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{ needs.Increment-Tag.outputs.newtag }} # This is the new tag variable is from the Increment-Tag job
+          release_name: ${{ needs.Increment-Tag.outputs.newtag }} # This is the new tag variable is from the Increment-Tag job
+          draft: false
+          prerelease: true # Automated Releases are defined as pre-release due to the need for human review and approval for Released Releases.
+  Sync-Branch-to-Develop-with-Pull-Request:
+    needs: [Create-Release, Increment-Tag]
+    runs-on: ubuntu-latest
+    name: Sync to develop via Pull Request
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Set up Node
+        uses: actions/setup-node@v1
+        with:
+          node-version: 12
+      - name: Opening pull request
+        id: pull
+        uses: tretuna/sync-branches@1.2.0
+        with:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          FROM_BRANCH: ${{ needs.Increment-Tag.outputs.branchname }}
+          TO_BRANCH: "develop"
+          PULL_REQUEST_TITLE: "${{ needs.Increment-Tag.outputs.branchname }} merge back to develop"
+          PULL_REQUEST_BODY: "RELEASE Code Changes from release branch [${{ needs.Increment-Tag.outputs.branchname }}] MUST be merged back to [develop] branch!"
